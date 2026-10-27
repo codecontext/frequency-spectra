@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Plot waveform and FFT records captured from the Frequency Spectra Zephyr app.
 
-The input is a text log containing FREQSPEC,WAVE and FREQSPEC,SPECTRUM CSV
-records. QEMU boot output and result records may be present and are ignored.
+The input is a text log containing FREQSPEC,WAVE, FREQSPEC,SPECTRUM,
+FREQSPEC,RESULT, and FREQSPEC,SUITE CSV records. QEMU boot output is ignored;
+detector results and the suite summary must indicate success before plotting.
 """
 
 import argparse
@@ -58,6 +59,62 @@ def parse_capture(path: Path) -> dict[str, dict[str, object]]:
     return cases
 
 
+def validate_results(path: Path) -> None:
+    """Require every reported case and the complete DSP suite to pass."""
+    result_cases: dict[str, dict[str, str]] = {}
+    suite_summary: dict[str, str] | None = None
+
+    for line_number, line in enumerate(path.read_text(errors="replace").splitlines(), start=1):
+        fields = line.strip().split(",")
+        if len(fields) < 3 or fields[0] != "FREQSPEC":
+            continue
+
+        record_type = fields[1]
+        if record_type not in {"RESULT", "SUITE"}:
+            continue
+
+        try:
+            values = dict(field.split("=", 1) for field in fields[2:])
+            if record_type == "RESULT":
+                case_name = values["case"]
+                values["expected"]
+                values["detected"]
+                values["pass"]
+                if case_name in result_cases:
+                    raise ValueError(f"duplicate RESULT record for {case_name}")
+                result_cases[case_name] = values
+            else:
+                if suite_summary is not None:
+                    raise ValueError("duplicate SUITE record")
+                suite_summary = values
+        except (KeyError, ValueError) as error:
+            raise ValueError(f"invalid {record_type} record on line {line_number}: {error}") from error
+
+    if not result_cases:
+        raise ValueError(f"no FREQSPEC RESULT records found in {path}")
+    if suite_summary is None:
+        raise ValueError("missing FREQSPEC SUITE record")
+
+    try:
+        passed_count = int(suite_summary["passed"])
+        total_count = int(suite_summary["total"])
+    except (KeyError, ValueError) as error:
+        raise ValueError("invalid FREQSPEC SUITE summary") from error
+
+    if total_count != len(result_cases) or passed_count != total_count:
+        raise ValueError(
+            f"DSP suite failed: {passed_count}/{total_count} cases passed, "
+            f"{len(result_cases)} RESULT records found"
+        )
+
+    for case_name, result in result_cases.items():
+        if result["pass"] != "1" or result["expected"] != result["detected"]:
+            raise ValueError(
+                f"DSP case {case_name} failed: expected {result['expected']}, "
+                f"detected {result['detected']}, pass={result['pass']}"
+            )
+
+
 def plot_capture(cases: dict[str, dict[str, object]], output: Path, show: bool) -> None:
     """Render waveform and one-sided spectrum panels and save them to disk."""
     if not show:
@@ -105,6 +162,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        validate_results(args.input)
         cases = parse_capture(args.input)
         plot_capture(cases, args.output, args.show)
     except (OSError, ValueError) as error:
