@@ -1,8 +1,9 @@
 # Frequency Spectra
 
 A Zephyr application for validating synthetic signal analysis on QEMU's
-emulated Cortex-A53. The first step is a minimal application and UART record;
-FFT processing and visualization will be added in follow-up changes.
+emulated Cortex-A53. It currently generates a synthetic tone, applies a Hann
+window and CMSIS-DSP real FFT, and checks that the expected spectral peak is
+detected. Host-side capture and visualization will be added in a follow-up.
 
 ## Architecture
 
@@ -39,9 +40,8 @@ Verified in the development environment:
 - CMSIS-DSP module checked out; its moving-average sample builds and runs on this target.
 - System Python packages: NumPy, SciPy, scikit-learn, Matplotlib, and pyserial.
 
-The current application is only a boot-and-UART scaffold. The CMSIS-DSP FFT
-pipeline, synthetic test cases, capture script, and plots are planned work, not
-implemented features yet.
+The current DSP test uses one clean synthetic tone. No noise, fault-like
+signals, capture script, or plots are implemented yet.
 
 ## Build and run
 
@@ -55,6 +55,6 @@ west build -b qemu_cortex_a53 \
 west build -d /tmp/frequency-spectra-build -t run
 ```
 
-The application prints one `FREQSPEC,BOOT,...` record on the emulated UART.
-This scaffold does not yet perform spectral analysis and makes no real-time or
-physical fault-diagnosis claims.
+The application prints `FREQSPEC,BOOT,...` and `FREQSPEC,RESULT,...` records on
+the emulated UART. This is functional algorithm validation only; it makes no
+real-time or physical fault-diagnosis claims.
