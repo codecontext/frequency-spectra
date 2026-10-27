@@ -1,9 +1,9 @@
 # Frequency Spectra
 
 A Zephyr application for validating synthetic signal analysis on QEMU's
-emulated Cortex-A53. It currently generates a synthetic tone, applies a Hann
-window and CMSIS-DSP real FFT, and checks that the expected spectral peak is
-detected. Host-side capture and visualization will be added in a follow-up.
+emulated Cortex-A53. It currently tests noisy normal and fault-like synthetic
+signals using a Hann window, CMSIS-DSP real FFT, and a harmonic-ratio detector.
+Host-side capture and visualization will be added in a follow-up.
 
 ## Architecture
 
@@ -40,8 +40,11 @@ Verified in the development environment:
 - CMSIS-DSP module checked out; its moving-average sample builds and runs on this target.
 - System Python packages: NumPy, SciPy, scikit-learn, Matplotlib, and pyserial.
 
-The current DSP test uses one clean synthetic tone. No noise, fault-like
-signals, capture script, or plots are implemented yet.
+The normal case contains a 64 Hz fundamental and deterministic low-level noise.
+The fault-like case adds a 128 Hz harmonic. A 20% harmonic-to-fundamental
+threshold is used as a simple demonstrator, not a physical diagnostic rule.
+Noise is deterministic so expected checks are repeatable in QEMU. The capture
+script and plots are not implemented yet.
 
 ## Build and run
 
