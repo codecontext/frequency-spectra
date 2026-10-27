@@ -102,6 +102,16 @@ python3 "$APP_DIR/scripts/plot_capture.py" \
 Open `$BUILD_DIR/frequency_spectra.png`. Change the `--output` value to choose
 another location, or add `--show` to open an interactive plot window.
 
+### Run the host parser tests
+
+From the application repository root, run the regression tests with the host
+Python environment:
+
+```sh
+deactivate
+python3 -m unittest discover -s tests -v
+```
+
 The UART output includes `FREQSPEC,BOOT,...`, waveform and spectrum vectors,
 per-case results, and the suite summary. This validates the DSP flow on
 synthetic data only; it does not demonstrate real-time performance or physical
