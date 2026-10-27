@@ -5,14 +5,18 @@
  * @details
  * The application generates repeatable normal and fault-like sample frames,
  * processes each frame with a Hann window and CMSIS-DSP real FFT, and reports
- * a simple harmonic-ratio classification over the emulated UART. The normal
- * frame contains a 64 Hz fundamental plus low-level deterministic noise. The
- * fault-like frame adds a 128 Hz harmonic.
+ * a simple harmonic-ratio classification over the emulated UART. Each case
+ * also emits its raw waveform and normalized one-sided spectrum as compact
+ * comma-separated records for host-side plotting. The normal frame contains a
+ * 64 Hz fundamental plus low-level deterministic noise. The fault-like frame
+ * adds a 128 Hz harmonic.
  *
  * The analysis path is:
  * @code
- * samples -> Hann window -> real FFT -> magnitude bins
- *         -> harmonic/fundamental ratio -> UART result record
+ * raw samples -> Hann window -> real FFT -> magnitude bins
+ *      |                          |                 |
+ *      +----> waveform record     +----> spectrum record
+ *                                -> harmonic ratio -> result record
  * @endcode
  *
  * This validates algorithm flow and expected synthetic results only. The
@@ -81,6 +85,9 @@ static const struct signal_case test_cases[] = {
 /** Time-domain input frame, overwritten for each signal case. */
 static float32_t samples[SAMPLE_COUNT];
 
+/** Windowed work frame passed to the CMSIS-DSP real FFT. */
+static float32_t windowed_samples[SAMPLE_COUNT];
+
 /** Hann window coefficients shared by all cases. */
 static float32_t window[SAMPLE_COUNT];
 
@@ -89,6 +96,35 @@ static float32_t spectrum[SAMPLE_COUNT];
 
 /** Magnitudes for bins 1 through the bin before Nyquist. */
 static float32_t magnitudes[(SAMPLE_COUNT / 2U) - 1U];
+
+/**
+ * @brief Emit one integer-scaled vector as a prefixed CSV UART record.
+ *
+ * @param record_type Record identifier, such as `WAVE` or `SPECTRUM`.
+ * @param test_case Signal case associated with the vector.
+ * @param values Vector data to serialize.
+ * @param value_count Number of entries in @p values.
+ * @param scale Multiplier used to convert each float into an integer.
+ *
+ * @details The first four fields are the record prefix, type, case name,
+ * sample rate, and sample count. Remaining fields contain the scaled data.
+ * Waveforms use a scale of 1000; spectrum values are normalized to an
+ * approximate sinusoid amplitude and then scaled by 1000.
+ */
+static void emit_vector_record(const char *record_type,
+			       const struct signal_case *test_case,
+			       const float32_t *values, uint32_t value_count,
+			       float32_t scale)
+{
+	printk("FREQSPEC,%s,case=%s,rate_hz=%u,sample_count=%u",
+	       record_type, test_case->name, SAMPLE_RATE_HZ, SAMPLE_COUNT);
+	for (uint32_t value_index = 0U; value_index < value_count; value_index++) {
+		int32_t scaled_value = (int32_t)(values[value_index] * scale);
+
+		printk(",%d", (int)scaled_value);
+	}
+	printk("\n");
+}
 
 /**
  * @brief Generate the next deterministic noise sample.
@@ -173,8 +209,8 @@ static bool analyze_case(const arm_rfft_fast_instance_f32 *fft,
 		samples[sample_index] = sample + next_noise(&noise_state);
 	}
 
-	arm_mult_f32(samples, window, samples, SAMPLE_COUNT);
-	arm_rfft_fast_f32(fft, samples, spectrum, 0U);
+	arm_mult_f32(samples, window, windowed_samples, SAMPLE_COUNT);
+	arm_rfft_fast_f32(fft, windowed_samples, spectrum, 0U);
 	arm_cmplx_mag_f32(&spectrum[2], magnitudes,
 			  (SAMPLE_COUNT / 2U) - 1U);
 
@@ -187,6 +223,11 @@ static bool analyze_case(const arm_rfft_fast_instance_f32 *fft,
 	passed = (detected_fundamental_bin == fundamental_bin) &&
 		 (!test_case->includes_fault_harmonic || detected_harmonic_bin == harmonic_bin) &&
 		 (detected_fault == test_case->includes_fault_harmonic);
+
+	emit_vector_record("WAVE", test_case, samples, SAMPLE_COUNT, MAGNITUDE_SCALE);
+	emit_vector_record("SPECTRUM", test_case, magnitudes,
+			   (SAMPLE_COUNT / 2U) - 1U,
+			   MAGNITUDE_SCALE * 4.0f / SAMPLE_COUNT);
 
 	printk("FREQSPEC,RESULT,case=%s,expected=%s,detected=%s,fundamental_hz=%u,"
 	       "harmonic_hz=%u,harmonic_ratio_milli=%u,pass=%u\n",
