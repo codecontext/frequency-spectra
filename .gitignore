@@ -1,0 +1,12 @@
+build/
+*.elf
+*.bin
+*.hex
+*.stat
+*.dts
+*.dts.pre
+.ninja_*
+ninja.log
+compile_commands.json
+__pycache__/
+*.pyc
