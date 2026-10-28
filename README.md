@@ -47,60 +47,31 @@ Noise is deterministic so expected checks are repeatable in QEMU.
 
 ## Run the demo
 
-Follow these steps on the Ubuntu host. Start in the root of your Zephyr
-workspace. The example assumes this repository is a sibling directory named
-`frequency-spectra`; change `APP_DIR` to the correct relative path if your
-checkout is elsewhere. Keep the commands in the same terminal so the variables
-remain set.
-
-### 1. Configure the workspace
-
-Set the relative application path and activate the Zephyr Python environment:
+From the application repository root, build and start live plotting with:
 
 ```sh
-APP_DIR=../frequency-spectra
-BUILD_DIR=build/frequency-spectra
-CAPTURE_LOG=build/frequency-spectra-uart.log
-source .venv/bin/activate
+./scripts/run_demo.sh
 ```
 
-### 2. Build the application
+The script automatically locates the neighboring Zephyr workspace, builds the
+live configuration, selects a host Python with Matplotlib, and starts QEMU
+with the live plot. No environment setup or extra flags are needed for the
+standard directory layout. Set `ZEPHYR_WORKSPACE` if Zephyr is located
+elsewhere, or `HOST_PYTHON` if the host Python with Matplotlib is not found
+automatically.
 
-Build for the QEMU Cortex-A53 board:
+### Live plotting
+
+Live plotting is the default. To run the finite two-case DSP test instead, use:
 
 ```sh
-west build -b qemu_cortex_a53 \
-    -d "$BUILD_DIR" \
-    "$APP_DIR"
+./scripts/run_demo.sh --finite
 ```
 
-### 3. Run QEMU and capture output
-
-Save the console output to a log file:
-
-```sh
-west build -d "$BUILD_DIR" -t run 2>&1 \
-    | tee "$CAPTURE_LOG"
-```
-
-Wait for `FREQSPEC,SUITE,passed=2,total=2`, then stop QEMU by pressing
-`Ctrl+A`, followed by `X`. The capture remains in `$CAPTURE_LOG`.
-
-### 4. Generate the plot
-
-In the same terminal, run the plotter with the host Python environment that has
-NumPy and Matplotlib installed. Leave the Zephyr virtual environment first so
-`python3` resolves to the host environment:
-
-```sh
-deactivate
-python3 "$APP_DIR/scripts/plot_capture.py" \
-    --input "$CAPTURE_LOG" \
-    --output "$BUILD_DIR/frequency_spectra.png"
-```
-
-Open `$BUILD_DIR/frequency_spectra.png`. Change the `--output` value to choose
-another location, or add `--show` to open an interactive plot window.
+The live mode chooses normal or fault-like input pseudo-randomly each frame, so
+the same class may appear on consecutive frames. The selection sequence is
+seeded at startup; it is pseudo-random, not a physical random source. The
+finite mode builds and runs the one-shot test without opening a plot.
 
 ### Run the host parser tests
 
