@@ -27,6 +27,7 @@
  */
 
 #include <zephyr/sys/printk.h>
+#include <zephyr/kernel.h>
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -34,7 +35,7 @@
 #include "arm_math.h"
 
 /** Number of time-domain samples in each analysis frame. */
-#define SAMPLE_COUNT 256U
+#define SAMPLE_COUNT 1024U
 
 /** Synthetic sampling rate, in samples per second. */
 #define SAMPLE_RATE_HZ 1024U
@@ -65,6 +66,9 @@
 
 /** Last searched bin before Nyquist. */
 #define LAST_NON_NYQUIST_BIN ((SAMPLE_COUNT / 2U) - 1U)
+
+/** Delay between completed analysis frames in opt-in live mode. */
+#define LIVE_FRAME_INTERVAL K_SECONDS(1)
 
 /** Synthetic signal configuration used by one test case. */
 struct signal_case {
@@ -102,6 +106,7 @@ static float32_t magnitudes[(SAMPLE_COUNT / 2U) - 1U];
  *
  * @param record_type Record identifier, such as `WAVE` or `SPECTRUM`.
  * @param test_case Signal case associated with the vector.
+ * @param frame_id Identifier shared by all records for this frame.
  * @param values Vector data to serialize.
  * @param value_count Number of entries in @p values.
  * @param scale Multiplier used to convert each float into an integer.
@@ -113,11 +118,12 @@ static float32_t magnitudes[(SAMPLE_COUNT / 2U) - 1U];
  */
 static void emit_vector_record(const char *record_type,
 			       const struct signal_case *test_case,
+			       uint32_t frame_id,
 			       const float32_t *values, uint32_t value_count,
 			       float32_t scale)
 {
-	printk("FREQSPEC,%s,case=%s,rate_hz=%u,sample_count=%u",
-	       record_type, test_case->name, SAMPLE_RATE_HZ, SAMPLE_COUNT);
+	printk("FREQSPEC,%s,case=%s,frame_id=%u,rate_hz=%u,sample_count=%u",
+	       record_type, test_case->name, frame_id, SAMPLE_RATE_HZ, SAMPLE_COUNT);
 	for (uint32_t value_index = 0U; value_index < value_count; value_index++) {
 		int32_t scaled_value = (int32_t)(values[value_index] * scale);
 
@@ -137,6 +143,20 @@ static float32_t next_noise(uint32_t *state)
 	*state = (*state * 1664525U) + 1013904223U;
 	return (((float32_t)(*state >> 16) / 65535.0f) * 2.0f - 1.0f) * NOISE_AMPLITUDE;
 }
+
+#ifdef FREQSPEC_LIVE
+/**
+ * @brief Advance the live-mode pseudo-random generator.
+ *
+ * @param state Mutable state for the linear-congruential generator.
+ * @return The next 32-bit pseudo-random value.
+ */
+static uint32_t next_random(uint32_t *state)
+{
+	*state = (*state * 1664525U) + 1013904223U;
+	return *state;
+}
+#endif
 
 /**
  * @brief Find the strongest magnitude near a target frequency bin.
@@ -174,6 +194,7 @@ static uint32_t find_peak_bin(uint32_t expected_bin, float32_t *peak_magnitude)
  *
  * @param fft Initialized CMSIS-DSP real-FFT instance.
  * @param test_case Signal composition and deterministic noise seed.
+ * @param frame_id Identifier for this generated frame.
  * @return true when the detected bins and class agree with this test case.
  *
  * @details The reported harmonic ratio is
@@ -182,9 +203,10 @@ static uint32_t find_peak_bin(uint32_t expected_bin, float32_t *peak_magnitude)
  * classified as fault-like; this is a demonstration rule, not a diagnosis.
  */
 static bool analyze_case(const arm_rfft_fast_instance_f32 *fft,
-			             const struct signal_case *test_case)
+                         const struct signal_case *test_case,
+                         uint32_t frame_id)
 {
-	uint32_t noise_state = test_case->noise_seed;
+	uint32_t noise_state = test_case->noise_seed ^ (frame_id * 0x9E3779B9U);
 	uint32_t fundamental_bin = FUNDAMENTAL_HZ * SAMPLE_COUNT / SAMPLE_RATE_HZ;
 	uint32_t harmonic_bin = HARMONIC_HZ * SAMPLE_COUNT / SAMPLE_RATE_HZ;
 	float32_t fundamental_magnitude;
@@ -224,15 +246,21 @@ static bool analyze_case(const arm_rfft_fast_instance_f32 *fft,
 		 (!test_case->includes_fault_harmonic || detected_harmonic_bin == harmonic_bin) &&
 		 (detected_fault == test_case->includes_fault_harmonic);
 
-	emit_vector_record("WAVE", test_case, samples, SAMPLE_COUNT, MAGNITUDE_SCALE);
-	emit_vector_record("SPECTRUM", test_case, magnitudes,
+	emit_vector_record("WAVE", test_case, frame_id, samples, SAMPLE_COUNT,
+			   MAGNITUDE_SCALE);
+	emit_vector_record("SPECTRUM", test_case, frame_id, magnitudes,
 			   (SAMPLE_COUNT / 2U) - 1U,
 			   MAGNITUDE_SCALE * 4.0f / SAMPLE_COUNT);
 
-	printk("FREQSPEC,RESULT,case=%s,expected=%s,detected=%s,fundamental_hz=%u,"
+	printk("FREQSPEC,RESULT,case=%s,frame_id=%u,expected=%s,detected=%s,"
+	       "input_fundamental_hz=%u,input_harmonic_hz=%u,"
+	       "fundamental_hz=%u,"
 	       "harmonic_hz=%u,harmonic_ratio_milli=%u,pass=%u\n",
-	       test_case->name, test_case->includes_fault_harmonic ? "fault" : "normal",
+	       test_case->name, frame_id,
+	       test_case->includes_fault_harmonic ? "fault" : "normal",
 	       detected_fault ? "fault" : "normal",
+	       FUNDAMENTAL_HZ,
+	       test_case->includes_fault_harmonic ? HARMONIC_HZ : 0U,
 	       detected_fundamental_bin * SAMPLE_RATE_HZ / SAMPLE_COUNT,
 	       detected_harmonic_bin * SAMPLE_RATE_HZ / SAMPLE_COUNT,
 	       harmonic_ratio_milli, passed);
@@ -248,7 +276,13 @@ static bool analyze_case(const arm_rfft_fast_instance_f32 *fft,
 int main(void)
 {
 	arm_rfft_fast_instance_f32 fft;
+	uint32_t frame_id = 0U;
+#ifndef FREQSPEC_LIVE
 	uint32_t passed_cases = 0U;
+#else
+	uint32_t case_random_state = k_cycle_get_32() ^ 0xA511E9B3U;
+	const uint32_t case_count = sizeof(test_cases) / sizeof(test_cases[0]);
+#endif
 
 	printk("FREQSPEC,BOOT,version=1,target=qemu_cortex_a53\n");
 
@@ -258,13 +292,26 @@ int main(void)
 	}
 
 	arm_hanning_f32(window, SAMPLE_COUNT);
+
+#ifdef FREQSPEC_LIVE
+	/* Randomize input class while retaining a steady, plot-friendly frame rate. */
+	while (true) {
+		uint32_t case_index = (next_random(&case_random_state) >> 31) % case_count;
+		const struct signal_case *test_case = &test_cases[case_index];
+
+		analyze_case(&fft, test_case, frame_id);
+		frame_id++;
+		k_sleep(LIVE_FRAME_INTERVAL);
+	}
+#else
 	for (uint32_t case_index = 0U;
 	     case_index < sizeof(test_cases) / sizeof(test_cases[0]); case_index++) {
-		passed_cases += analyze_case(&fft, &test_cases[case_index]);
+		passed_cases += analyze_case(&fft, &test_cases[case_index], frame_id++);
 	}
 
 	printk("FREQSPEC,SUITE,passed=%u,total=%u\n", passed_cases,
 	       (uint32_t)(sizeof(test_cases) / sizeof(test_cases[0])));
 
 	return 0;
+#endif
 }
